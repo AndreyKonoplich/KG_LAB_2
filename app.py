@@ -3,89 +3,112 @@ import numpy as np
 import tkinter as tk
 from tkinter import filedialog
 from matplotlib import pyplot as plt
+from scipy import ndimage
+from skimage import color, io
 
-class Application: 
-    def __init__(self):
-        self.app = tk.Tk()
-        self.app.title("Image Processing Application")
+def convolve2d(image, kernel):
+    image_height, image_width = image.shape
+    kernel_height, kernel_width = kernel.shape
+    kernel = np.flipud(np.fliplr(kernel))
 
-        self.d = tk.IntVar()
-        self.ksize = tk.IntVar()
-        self.sigma_color = tk.DoubleVar()
-        self.sigma_space = tk.DoubleVar()
+    output_height = image_height - kernel_height + 1
+    output_width = image_width - kernel_width + 1
 
-        self.d.set(3)
-        self.ksize.set(13)
-        self.sigma_color.set(75)
-        self.sigma_space.set(75)
+    image_windows = np.lib.stride_tricks.sliding_window_view(image, (kernel_height, kernel_width))
+    output = np.sum(image_windows * kernel, axis=(2, 3))
 
-        d_label = tk.Label(self.app, text="Parameter d:")
-        d_label.pack()
-        d_entry = tk.Entry(self.app, textvariable=self.d)
-        d_entry.pack()
+    return output
 
-        ksize_label = tk.Label(self.app, text="Parameter ksize:")
-        ksize_label.pack()
-        ksize_entry = tk.Entry(self.app, textvariable=self.ksize)
-        ksize_entry.pack()
+def sobel_operators(image):
+    sobel_x = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+    sobel_y = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]])
+    gradient_x = convolve2d(image, sobel_x)
+    gradient_y = convolve2d(image, sobel_y)
+    return gradient_x, gradient_y
 
-        sigma_color_label = tk.Label(self.app, text="Parameter sigma_color:")
-        sigma_color_label.pack()
-        sigma_color_entry = tk.Entry(self.app, textvariable=self.sigma_color)
-        sigma_color_entry.pack()
+def calculate_gradient_magnitude(gray):
+    gray = gray.astype(np.float64)
+    gradient_x, gradient_y = sobel_operators(gray)
 
-        sigma_space_label = tk.Label(self.app, text="Parameter sigma_space:")
-        sigma_space_label.pack()
-        sigma_space_entry = tk.Entry(self.app, textvariable=self.sigma_space)
-        sigma_space_entry.pack()
+    gradient_magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
+    gradient_magnitude = (255 * gradient_magnitude / np.max(gradient_magnitude)).astype(np.uint8)
 
-        browse_button = tk.Button(self.app, text="Browse Image", command=self.browse_image)
-        browse_button.pack()
+    return gradient_magnitude
 
-        self.app.mainloop()
+def detect_changes_in_brightness(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gradient_magnitude = calculate_gradient_magnitude(gray) 
+    return cv2.cvtColor(gradient_magnitude, cv2.COLOR_GRAY2BGR)
 
-    def browse_image(self):
-        file_path = filedialog.askopenfilename()
-        if file_path:
-            image = cv2.imread(file_path)
+def detect_lines(image):
+    gray = image.mean(axis=2)
 
-            d = self.d.get()
-            ksize = self.ksize.get()
-            sigma_color = self.sigma_color.get()
-            sigma_space = self.sigma_space.get()
-            print(d, " ", ksize, " ", sigma_color, " ", sigma_space)
+    kernel = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]]) / 9.0
+    blurred = convolve2d(gray, kernel)
 
-            kernel = np.ones((5, 5), np.uint8)
+    gradient_x, gradient_y = sobel_operators(blurred)
+    gradient_magnitude = np.sqrt(gradient_x**2 + gradient_y**2)
+    edges = (gradient_magnitude > 100).astype(np.uint8)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=25, minLineLength=10, maxLineGap=10)
+    
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # Morphological
-            dilated_image = cv2.dilate(image, kernel, iterations=1)
-            eroded_image = cv2.erode(image, kernel, iterations=1)
-            opened_image = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
-            closed_image = cv2.morphologyEx(image, cv2.MORPH_CLOSE, kernel)
+    return image
 
-            # Blurring images
-            blurred_image = cv2.blur(image, (ksize, ksize))
 
-            median_image = cv2.medianBlur(image, ksize)
+def detect_points(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    corners = cv2.goodFeaturesToTrack(gray, maxCorners=750, qualityLevel=0.0001, minDistance=10)
 
-            kernel = np.zeros((ksize, ksize), np.float32)
-            kernel[int((ksize - 1) / 2), :] = np.ones(ksize)
-            kernel = kernel / ksize
-            D_image = cv2.filter2D(image, -1, kernel)
+    if corners is not None:
+        for corner in corners:
+            x, y = corner.ravel()
+            x, y = int(x), int(y)
+            cv2.circle(image, (x, y), 6, (0, 255, 0), -1)
 
-            bilateral_image = cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+    return image
 
-            # Processed images
-            plt.figure(figsize=(38, 27))
-            plt.subplot(331), plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)), plt.title('Original Image')
-            plt.subplot(332), plt.imshow(cv2.cvtColor(dilated_image, cv2.COLOR_BGR2RGB)), plt.title('Dilated Image')
-            plt.subplot(333), plt.imshow(cv2.cvtColor(eroded_image, cv2.COLOR_BGR2RGB)), plt.title('Eroded Image')
-            plt.subplot(334), plt.imshow(cv2.cvtColor(opened_image, cv2.COLOR_BGR2RGB)), plt.title('Opened Image')
-            plt.subplot(335), plt.imshow(cv2.cvtColor(closed_image, cv2.COLOR_BGR2RGB)), plt.title('Closed Image')
-            plt.subplot(336), plt.imshow(cv2.cvtColor(blurred_image, cv2.COLOR_BGR2RGB)), plt.title('Blurred Image')
-            plt.subplot(337), plt.imshow(cv2.cvtColor(median_image, cv2.COLOR_BGR2RGB)), plt.title('Median Image')
-            plt.subplot(338), plt.imshow(cv2.cvtColor(D_image, cv2.COLOR_BGR2RGB)), plt.title('2D Image')
-            plt.subplot(339), plt.imshow(cv2.cvtColor(bilateral_image, cv2.COLOR_BGR2RGB)), plt.title('Bilateral Image')
-            plt.show()
+def simple_thresholding(image, threshold):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    thresholded = (gray > threshold).astype(np.uint8) * 255
+    return thresholded
 
-app = Application()
+def adaptive_thresholding(image, block_size, constant):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    thresholded = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, block_size, constant)
+    return cv2.cvtColor(thresholded, cv2.COLOR_GRAY2BGR)
+
+def browse_image():
+    file_path = filedialog.askopenfilename()
+    if file_path:
+        image = cv2.imread(file_path)
+        
+        # image segmentation
+        points_image = detect_points(image.copy())
+        lines_image = detect_lines(image.copy())
+        brightness_image = detect_changes_in_brightness(image.copy())
+        
+        # local thresholding
+        simple_thresholded = simple_thresholding(image, 120)
+        adaptive_thresholded = adaptive_thresholding(image, 11, 2)
+        
+        # processed images
+        plt.figure(figsize=(12, 8))
+        plt.subplot(231), plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)), plt.title('Original Image')
+        plt.subplot(232), plt.imshow(cv2.cvtColor(points_image, cv2.COLOR_BGR2RGB)), plt.title('Points Detection')
+        plt.subplot(233), plt.imshow(cv2.cvtColor(lines_image, cv2.COLOR_BGR2RGB)), plt.title('Line Detection')
+        plt.subplot(234), plt.imshow(cv2.cvtColor(brightness_image, cv2.COLOR_BGR2RGB)), plt.title('Brightness Changes')
+        plt.subplot(235), plt.imshow(cv2.cvtColor(simple_thresholded, cv2.COLOR_BGR2RGB)), plt.title('Simple Thresholding')
+        plt.subplot(236), plt.imshow(cv2.cvtColor(adaptive_thresholded, cv2.COLOR_BGR2RGB)), plt.title('Adaptive Thresholding')
+        plt.show()
+
+app = tk.Tk()
+app.title("Image Processing Application")
+
+browse_button = tk.Button(app, text="Browse Image", command=browse_image)
+browse_button.pack()
+
+app.mainloop()
